@@ -1,0 +1,767 @@
+
+import React, { useEffect, useState } from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  ScrollView,
+  Pressable,
+  StyleSheet,
+  StatusBar,
+  Alert,
+  AppState,
+  KeyboardAvoidingView,
+  Platform,
+} from 'react-native';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { LinearGradient } from 'expo-linear-gradient';
+import { BlurView } from 'expo-blur';
+
+type Task = {
+  id: string;
+  name: string;
+  points: number;
+  custom: boolean;
+};
+
+type Progress = {
+  aura: number;
+  xp: number;
+  completed: string[];
+  date: string;
+  tasks: Task[];
+};
+
+type Tab = 'home' | 'create';
+
+const KEY = 'levelup_progress_v3';
+const OLD_KEY = 'levelup_progress_v2';
+
+const DEFAULT_TASKS: Task[] = [
+  { id: 'default-1', name: 'Tập thể dục 30 phút', points: 30, custom: false },
+  { id: 'default-2', name: 'Học kỹ năng mới', points: 25, custom: false },
+  { id: 'default-3', name: 'Đọc sách 15 phút', points: 15, custom: false },
+  { id: 'default-4', name: 'Uống đủ nước', points: 10, custom: false },
+  { id: 'default-5', name: 'Ngủ đúng giờ', points: 20, custom: false },
+];
+
+const today = () => {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
+const initial = (): Progress => ({
+  aura: 0,
+  xp: 0,
+  completed: [],
+  date: today(),
+  tasks: DEFAULT_TASKS,
+});
+
+function migrateOld(data: any): Progress {
+  return {
+    aura: Number(data.aura) || 0,
+    xp: Number(data.xp) || 0,
+    date: data.date || today(),
+    completed: Array.isArray(data.completed)
+      ? data.completed.map((id: number) => `default-${id}`)
+      : [],
+    tasks: DEFAULT_TASKS,
+  };
+}
+
+const C = {
+  white: '#F8F6F2',
+  muted: 'rgba(255,255,255,0.58)',
+  line: 'rgba(255,255,255,0.18)',
+  glass: 'rgba(255,255,255,0.075)',
+  gold: '#E8D6AE',
+  red: '#FFAEAE',
+  green: '#BFE8D2',
+};
+
+function Glass({
+  children,
+  style,
+}: {
+  children: React.ReactNode;
+  style?: any;
+}) {
+  return (
+    <View style={[styles.glass, style]}>
+      <BlurView
+        intensity={25}
+        tint="dark"
+        style={StyleSheet.absoluteFill}
+      />
+      {children}
+    </View>
+  );
+}
+
+function Main() {
+  const [tab, setTab] = useState<Tab>('home');
+  const [data, setData] = useState<Progress>(initial);
+  const [ready, setReady] = useState(false);
+
+  const [name, setName] = useState('');
+  const [points, setPoints] = useState('20');
+  const [kind, setKind] = useState<'positive' | 'negative'>('positive');
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const saved = await AsyncStorage.getItem(KEY);
+
+        if (saved) {
+          const parsed = JSON.parse(saved) as Progress;
+          setData({
+            ...parsed,
+            tasks: Array.isArray(parsed.tasks)
+              ? parsed.tasks
+              : DEFAULT_TASKS,
+            completed:
+              parsed.date === today() ? parsed.completed : [],
+            date: today(),
+          });
+        } else {
+          const old = await AsyncStorage.getItem(OLD_KEY);
+
+          if (old) {
+            const converted = migrateOld(JSON.parse(old));
+            setData({
+              ...converted,
+              completed:
+                converted.date === today() ? converted.completed : [],
+              date: today(),
+            });
+          }
+        }
+      } catch {
+        Alert.alert('Lỗi', 'Không đọc được dữ liệu cũ.');
+      } finally {
+        setReady(true);
+      }
+    }
+
+    load();
+  }, []);
+
+  useEffect(() => {
+    if (!ready) return;
+
+    AsyncStorage.setItem(KEY, JSON.stringify(data)).catch(() => {
+      Alert.alert('Lỗi', 'Không thể lưu dữ liệu LevelUp.');
+    });
+  }, [data, ready]);
+
+  useEffect(() => {
+    const refresh = () => {
+      setData(prev => {
+        if (prev.date === today()) return prev;
+
+        return {
+          ...prev,
+          date: today(),
+          completed: [],
+        };
+      });
+    };
+
+    const subscription = AppState.addEventListener('change', state => {
+      if (state === 'active') refresh();
+    });
+
+    const interval = setInterval(refresh, 60000);
+
+    return () => {
+      subscription.remove();
+      clearInterval(interval);
+    };
+  }, []);
+
+  const level = Math.floor(data.xp / 100) + 1;
+  const levelXp = data.xp % 100;
+  const completedToday =
+    data.date === today() ? data.completed : [];
+
+  const complete = (task: Task) => {
+    setData(prev => {
+      const ids = prev.date === today() ? prev.completed : [];
+
+      if (ids.includes(task.id)) return prev;
+
+      return {
+        ...prev,
+        date: today(),
+        completed: [...ids, task.id],
+        aura: prev.aura + task.points,
+        xp: prev.xp + Math.max(0, task.points),
+      };
+    });
+  };
+
+  const createTask = () => {
+    const title = name.trim();
+    const amount = Number(points.replace(',', '.'));
+
+    if (!title) {
+      Alert.alert('Thiếu tên', 'Hãy nhập tên nhiệm vụ.');
+      return;
+    }
+
+    if (
+      !Number.isFinite(amount) ||
+      !Number.isInteger(amount) ||
+      amount < 1 ||
+      amount > 10000
+    ) {
+      Alert.alert('Điểm không hợp lệ', 'Nhập số nguyên từ 1 đến 10.000.');
+      return;
+    }
+
+    const signed = kind === 'positive' ? amount : -amount;
+
+    const task: Task = {
+      id: `custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: title,
+      points: signed,
+      custom: true,
+    };
+
+    setData(prev => ({
+      ...prev,
+      tasks: [...prev.tasks, task],
+    }));
+
+    setName('');
+    setPoints('20');
+    setTab('home');
+  };
+
+  const deleteTask = (task: Task) => {
+    if (!task.custom) return;
+
+    Alert.alert(
+      'Xóa nhiệm vụ?',
+      `Bạn muốn xóa "${task.name}" khỏi danh sách hằng ngày?`,
+      [
+        { text: 'Hủy', style: 'cancel' },
+        {
+          text: 'Xóa',
+          style: 'destructive',
+          onPress: () => setData(prev => ({
+            ...prev,
+            tasks: prev.tasks.filter(t => t.id !== task.id),
+            completed: prev.completed.filter(id => id !== task.id),
+          })),
+        },
+      ]
+    );
+  };
+
+  if (!ready) {
+    return (
+      <View style={styles.loading}>
+        <Text style={styles.logo}>LEVELUP</Text>
+      </View>
+    );
+  }
+
+  return (
+    <LinearGradient
+      colors={['#081322', '#16233A', '#242033', '#131721']}
+      style={styles.root}
+    >
+      <StatusBar barStyle="light-content" />
+
+      <View pointerEvents="none" style={styles.circleOne} />
+      <View pointerEvents="none" style={styles.circleTwo} />
+      <View pointerEvents="none" style={styles.circleThree} />
+
+      <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
+        <KeyboardAvoidingView
+          style={styles.flex}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <View style={styles.header}>
+            <View>
+              <Text style={styles.logo}>LEVELUP</Text>
+              <Text style={styles.subtitle}>Level up your life</Text>
+            </View>
+            <Glass style={styles.avatar}>
+              <Text style={styles.avatarText}>A</Text>
+            </Glass>
+          </View>
+
+          {tab === 'home' ? (
+            <ScrollView
+              style={styles.flex}
+              contentContainerStyle={styles.content}
+              showsVerticalScrollIndicator={false}
+            >
+              <Glass style={styles.hero}>
+                <Text style={styles.eyebrow}>CURRENT AURA</Text>
+                <Text style={styles.aura}>
+                  {data.aura.toLocaleString('vi-VN')}
+                </Text>
+                <Text style={styles.gold}>✦ Aura Points</Text>
+
+                <View style={styles.divider} />
+
+                <View style={styles.levelRow}>
+                  <View>
+                    <Text style={styles.muted}>Level</Text>
+                    <Text style={styles.level}>{level}</Text>
+                  </View>
+                  <View style={styles.right}>
+                    <Text style={styles.muted}>XP Progress</Text>
+                    <Text style={styles.xp}>{levelXp} / 100 XP</Text>
+                  </View>
+                </View>
+
+                <View style={styles.progressTrack}>
+                  <View
+                    style={[
+                      styles.progressFill,
+                      { width: `${levelXp}%` },
+                    ]}
+                  />
+                </View>
+              </Glass>
+
+              <View style={styles.headingRow}>
+                <View>
+                  <Text style={styles.heading}>Today's Quests</Text>
+                  <Text style={styles.muted}>Lặp lại mỗi ngày</Text>
+                </View>
+                <Text style={styles.counter}>
+                  {completedToday.length}/{data.tasks.length}
+                </Text>
+              </View>
+
+              {data.tasks.length === 0 && (
+                <Text style={styles.empty}>
+                  Chưa có nhiệm vụ. Hãy tạo nhiệm vụ đầu tiên!
+                </Text>
+              )}
+
+              {data.tasks.map(task => {
+                const done = completedToday.includes(task.id);
+                const positive = task.points > 0;
+
+                return (
+                  <Pressable
+                    key={task.id}
+                    onPress={() => {
+                      if (done) return;
+
+                      if (!positive) {
+                        Alert.alert(
+                          'Xác nhận trừ Aura',
+                          `Ghi nhận "${task.name}" và trừ ${Math.abs(task.points)} Aura?`,
+                          [
+                            { text: 'Hủy', style: 'cancel' },
+                            { text: 'Xác nhận', onPress: () => complete(task) },
+                          ]
+                        );
+                      } else {
+                        complete(task);
+                      }
+                    }}
+                    onLongPress={() => deleteTask(task)}
+                  >
+                    <Glass style={styles.taskCard}>
+                      <View style={[
+                        styles.checkbox,
+                        done && styles.checked,
+                      ]}>
+                        {done && <Text style={styles.tick}>✓</Text>}
+                      </View>
+
+                      <View style={styles.taskBody}>
+                        <Text
+                          style={[
+                            styles.taskName,
+                            done && styles.taskDone,
+                          ]}
+                          numberOfLines={2}
+                        >
+                          {task.name}
+                        </Text>
+                        <Text style={styles.taskHint}>
+                          {done
+                            ? 'Đã ghi nhận hôm nay'
+                            : positive
+                              ? 'Chạm để hoàn thành'
+                              : 'Chạm để ghi nhận'}
+                        </Text>
+                      </View>
+
+                      <Text
+                        style={[
+                          styles.taskPoints,
+                          !positive && styles.red,
+                        ]}
+                      >
+                        {positive ? '+' : '−'}
+                        {Math.abs(task.points)}
+                      </Text>
+                    </Glass>
+                  </Pressable>
+                );
+              })}
+
+              <Text style={styles.bottomHint}>
+                Nhấn giữ nhiệm vụ tự tạo để xóa.
+              </Text>
+            </ScrollView>
+          ) : (
+            <ScrollView
+              style={styles.flex}
+              contentContainerStyle={styles.content}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              <Text style={styles.pageTitle}>Create a Quest</Text>
+              <Text style={styles.pageSubtitle}>
+                Tạo nhiệm vụ của riêng bạn.
+                Nhiệm vụ sẽ xuất hiện mỗi ngày.
+              </Text>
+
+              <Glass style={styles.formCard}>
+                <Text style={styles.label}>TÊN NHIỆM VỤ</Text>
+                <TextInput
+                  style={styles.input}
+                  value={name}
+                  onChangeText={setName}
+                  placeholder="Ví dụ: Học tiếng Anh 30 phút"
+                  placeholderTextColor="rgba(255,255,255,0.35)"
+                  maxLength={100}
+                />
+
+                <Text style={styles.label}>LOẠI NHIỆM VỤ</Text>
+
+                <View style={styles.typeRow}>
+                  <Pressable
+                    onPress={() => setKind('positive')}
+                    style={[
+                      styles.typeButton,
+                      kind === 'positive' && styles.typeActive,
+                    ]}
+                  >
+                    <Text style={styles.typeText}>+ Tích cực</Text>
+                  </Pressable>
+
+                  <Pressable
+                    onPress={() => setKind('negative')}
+                    style={[
+                      styles.typeButton,
+                      kind === 'negative' && styles.typeActive,
+                    ]}
+                  >
+                    <Text style={styles.typeText}>− Tiêu cực</Text>
+                  </Pressable>
+                </View>
+
+                <Text style={styles.label}>SỐ ĐIỂM AURA</Text>
+                <TextInput
+                  style={styles.input}
+                  value={points}
+                  onChangeText={setPoints}
+                  keyboardType="number-pad"
+                  placeholder="20"
+                  placeholderTextColor={C.muted}
+                  maxLength={5}
+                />
+
+                <Text style={styles.preview}>
+                  {kind === 'positive' ? '+' : '−'}
+                  {points || '0'} Aura / lần ghi nhận
+                </Text>
+
+                <Pressable
+                  style={styles.createButton}
+                  onPress={createTask}
+                >
+                  <Text style={styles.createText}>
+                    + TẠO NHIỆM VỤ
+                  </Text>
+                </Pressable>
+              </Glass>
+
+              <Glass style={styles.noteCard}>
+                <Text style={styles.noteTitle}>✦ Daily Quest</Text>
+                <Text style={styles.noteText}>
+                  Nhiệm vụ được lưu lâu dài và làm mới trạng thái
+                  mỗi ngày. Aura tích lũy vẫn được giữ nguyên.
+                  Nhiệm vụ tích cực cộng cả Aura và XP.
+                  Nhiệm vụ tiêu cực chỉ trừ Aura.
+                </Text>
+              </Glass>
+            </ScrollView>
+          )}
+
+          <View style={styles.navOuter}>
+            <Glass style={styles.navBar}>
+              <Pressable
+                style={[
+                  styles.navItem,
+                  tab === 'home' && styles.navActive,
+                ]}
+                onPress={() => setTab('home')}
+              >
+                <Text style={styles.navIcon}>⌂</Text>
+                <Text style={styles.navText}>Hôm nay</Text>
+              </Pressable>
+
+              <Pressable
+                style={[
+                  styles.navItem,
+                  tab === 'create' && styles.navActive,
+                ]}
+                onPress={() => setTab('create')}
+              >
+                <Text style={styles.navIcon}>＋</Text>
+                <Text style={styles.navText}>Tạo nhiệm vụ</Text>
+              </Pressable>
+            </Glass>
+          </View>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    </LinearGradient>
+  );
+}
+
+export default function App() {
+  return (
+    <SafeAreaProvider>
+      <Main />
+    </SafeAreaProvider>
+  );
+}
+
+const styles = StyleSheet.create({
+  flex: { flex: 1 },
+  root: { flex: 1 },
+  safe: { flex: 1 },
+  loading: {
+    flex: 1,
+    backgroundColor: '#081322',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  circleOne: {
+    position: 'absolute', top: 90, right: -85,
+    width: 260, height: 260, borderRadius: 150,
+    backgroundColor: 'rgba(125,162,225,0.15)',
+  },
+  circleTwo: {
+    position: 'absolute', top: 470, left: -110,
+    width: 300, height: 300, borderRadius: 160,
+    backgroundColor: 'rgba(161,120,215,0.12)',
+  },
+  circleThree: {
+    position: 'absolute', bottom: 75, right: -30,
+    width: 180, height: 180, borderRadius: 100,
+    backgroundColor: 'rgba(216,187,142,0.08)',
+  },
+  glass: {
+    borderRadius: 24,
+    borderColor: C.line,
+    borderWidth: 1,
+    backgroundColor: C.glass,
+    overflow: 'hidden',
+  },
+  header: {
+    paddingHorizontal: 22,
+    paddingTop: 10,
+    paddingBottom: 12,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  logo: {
+    color: C.white, fontSize: 26,
+    fontWeight: '800', letterSpacing: 4,
+  },
+  subtitle: { color: C.muted, fontSize: 12, marginTop: 3 },
+  avatar: {
+    width: 45, height: 45, borderRadius: 23,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  avatarText: {
+    color: C.white, fontSize: 20, fontWeight: '700',
+  },
+  content: {
+    paddingHorizontal: 22,
+    paddingTop: 14,
+    paddingBottom: 25,
+  },
+  hero: { padding: 24 },
+  eyebrow: {
+    color: C.muted, letterSpacing: 2, fontSize: 11,
+  },
+  aura: {
+    color: C.white, fontSize: 58,
+    fontWeight: '700', marginTop: 14,
+  },
+  gold: { color: C.gold, fontSize: 15 },
+  divider: {
+    height: 1, backgroundColor: C.line, marginVertical: 24,
+  },
+  levelRow: {
+    flexDirection: 'row', justifyContent: 'space-between',
+  },
+  muted: { color: C.muted, fontSize: 12 },
+  level: {
+    color: C.white, fontSize: 27,
+    fontWeight: '700', marginTop: 7,
+  },
+  right: { alignItems: 'flex-end' },
+  xp: {
+    color: C.white, fontSize: 15,
+    marginTop: 12, fontWeight: '600',
+  },
+  progressTrack: {
+    height: 8, marginTop: 18,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderRadius: 10, overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%', backgroundColor: C.gold,
+    borderRadius: 10,
+  },
+  headingRow: {
+    flexDirection: 'row', justifyContent: 'space-between',
+    alignItems: 'center', marginTop: 30, marginBottom: 14,
+  },
+  heading: {
+    color: C.white, fontSize: 21,
+    fontWeight: '700', marginBottom: 5,
+  },
+  counter: {
+    color: C.gold, fontWeight: '700', fontSize: 14,
+  },
+  taskCard: {
+    padding: 17, borderRadius: 20, marginBottom: 12,
+    flexDirection: 'row', alignItems: 'center',
+    minHeight: 82,
+  },
+  checkbox: {
+    height: 28, width: 28, borderRadius: 14,
+    borderWidth: 1, borderColor: C.muted,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  checked: {
+    backgroundColor: C.gold, borderColor: C.gold,
+  },
+  tick: { color: '#16191E', fontWeight: '900' },
+  taskBody: { flex: 1, marginHorizontal: 13 },
+  taskName: {
+    color: C.white, fontSize: 14, fontWeight: '600',
+  },
+  taskDone: {
+    color: C.muted, textDecorationLine: 'line-through',
+  },
+  taskHint: {
+    color: C.muted, fontSize: 11, marginTop: 5,
+  },
+  taskPoints: {
+    color: C.gold, fontSize: 16, fontWeight: '700',
+  },
+  red: { color: C.red },
+  empty: { color: C.muted, marginVertical: 25 },
+  bottomHint: {
+    textAlign: 'center', color: C.muted,
+    fontSize: 11, marginTop: 18,
+  },
+  pageTitle: {
+    color: C.white, fontSize: 29,
+    fontWeight: '700', marginTop: 12,
+  },
+  pageSubtitle: {
+    color: C.muted, lineHeight: 21,
+    fontSize: 13, marginTop: 10, marginBottom: 25,
+  },
+  formCard: { padding: 22 },
+  label: {
+    color: C.gold, fontSize: 11,
+    letterSpacing: 1.5, marginBottom: 12,
+    marginTop: 10,
+  },
+  input: {
+    color: C.white, fontSize: 15,
+    backgroundColor: 'rgba(255,255,255,0.07)',
+    borderRadius: 14, borderWidth: 1,
+    borderColor: C.line,
+    paddingHorizontal: 16, paddingVertical: 15,
+    marginBottom: 22,
+  },
+  typeRow: {
+    flexDirection: 'row', gap: 10, marginBottom: 22,
+  },
+  typeButton: {
+    flex: 1, paddingVertical: 15,
+    alignItems: 'center', borderRadius: 14,
+    borderWidth: 1, borderColor: C.line,
+  },
+  typeActive: {
+    backgroundColor: 'rgba(232,214,174,0.2)',
+    borderColor: C.gold,
+  },
+  typeText: {
+    color: C.white, fontSize: 13, fontWeight: '600',
+  },
+  preview: {
+    color: C.muted, fontSize: 12,
+    textAlign: 'center', marginBottom: 20,
+  },
+  createButton: {
+    backgroundColor: C.gold, padding: 18,
+    borderRadius: 16, alignItems: 'center',
+  },
+  createText: {
+    color: '#171A20', fontSize: 14, fontWeight: '800',
+    letterSpacing: 1,
+  },
+  noteCard: {
+    marginTop: 20, padding: 20,
+  },
+  noteTitle: {
+    color: C.gold, fontSize: 15, fontWeight: '700',
+    marginBottom: 8,
+  },
+  noteText: {
+    color: C.muted, fontSize: 12, lineHeight: 20,
+  },
+  navOuter: {
+    paddingHorizontal: 22,
+    paddingTop: 8,
+    paddingBottom: 6,
+  },
+  navBar: {
+    borderRadius: 35, padding: 7,
+    flexDirection: 'row',
+  },
+  navItem: {
+    flex: 1, alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 9, borderRadius: 28,
+  },
+  navActive: {
+    backgroundColor: 'rgba(255,255,255,0.17)',
+  },
+  navIcon: {
+    color: C.white, fontSize: 23,
+    fontWeight: '600', lineHeight: 28,
+  },
+  navText: {
+    color: C.white, fontSize: 11,
+    fontWeight: '600', marginTop: 2,
+  },
+});
